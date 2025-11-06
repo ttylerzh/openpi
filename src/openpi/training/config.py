@@ -20,6 +20,7 @@ import openpi.models.tokenizer as _tokenizer
 import openpi.policies.aloha_policy as aloha_policy
 import openpi.policies.droid_policy as droid_policy
 import openpi.policies.libero_policy as libero_policy
+import openpi.policies.realman_policy as realman_policy
 import openpi.shared.download as _download
 import openpi.shared.normalize as _normalize
 import openpi.training.droid_rlds_dataset as droid_rlds_dataset
@@ -452,6 +453,51 @@ class LeRobotDROIDDataConfig(DataConfigFactory):
             model_transforms=model_transforms,
         )
 
+#########################################################################################################################
+
+@dataclasses.dataclass(frozen=True)
+class Dual_RealmanDataConfig(DataConfigFactory):
+    # 如果原始数据中动作字段名不是actions,需要在这里指定
+    action_sequence_keys: Sequence[str] = ("action",)
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig, ) -> DataConfig:
+        repack_transform = _transforms.Group(
+            inputs=[
+                _transforms.RepackTransform(
+                    {
+                        "observation/top_image": "top_image",
+                        "observation/lwrist_image": "lwrist_image",
+                        "observation/rwrist_image": "rwrist_image",
+                        "observation/state": "state",
+                        "actions": "action",
+                        "prompt": "prompt",
+                    }
+                )
+            ]
+        )
+        
+        data_transforms = _transforms.Group(
+            inputs=[realman_policy.Dual_RealmanInputs(action_dim=model_config.action_dim, model_type=model_config.model_type)],
+            outputs=[realman_policy.Dual_RealmanOutputs()],
+        )
+        delta_action_mask = _transforms.make_bool_mask(6, -1, 6, -1)
+        data_transforms = data_transforms.push(
+            inputs=[_transforms.DeltaActions(delta_action_mask)],
+            outputs=[_transforms.AbsoluteActions(delta_action_mask)],
+        )
+
+        model_transforms = ModelTransformFactory()(model_config)
+
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            repack_transforms=repack_transform,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+            action_sequence_keys=self.action_sequence_keys,
+        )
+
+#########################################################################################################################
 
 @dataclasses.dataclass(frozen=True)
 class TrainConfig:
@@ -487,7 +533,7 @@ class TrainConfig:
     data: DataConfigFactory = dataclasses.field(default_factory=FakeDataConfig)
 
     # Base directory for config assets (e.g., norm stats).
-    assets_base_dir: str = "./assets"
+    assets_base_dir: str = "./data"
     # Base directory for checkpoints.
     checkpoint_base_dir: str = "./checkpoints"
 
@@ -549,6 +595,22 @@ class TrainConfig:
 
 # Use `get_config` if you need to get a config by name in your code.
 _CONFIGS = [
+    TrainConfig(
+        # pi0_base中的action_dim是填充target的长度，不需要调整只要在policy中设置padding即可
+        # pi0_fast中的action_dim是数据中action长度，要和数据中保持一致
+        name="pi05_realman_transfer",
+        model=pi0_config.Pi0Config(pi05=True, action_horizon=50, max_token_len=250, paligemma_variant="gemma_2b_lora"),
+        data=Dual_RealmanDataConfig(
+            repo_id='realman/transfer_250910',
+            base_config=DataConfig(prompt_from_task=True,asset_id="realman"),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        batch_size=16,
+        num_train_steps=6_000,
+        save_interval=2000,
+        freeze_filter=pi0_config.Pi0Config(pi05=True,action_horizon=50, max_token_len=250, paligemma_variant="gemma_2b_lora"
+        ).get_freeze_filter(),
+    ),
     #
     # Inference Aloha configs.
     #
