@@ -19,29 +19,42 @@ cv2.setNumThreads(20)
 logging.basicConfig(level=logging.INFO)
 
 FEATURES = {
-    "observation.images.left": {
+    "observation.images.top_left": {
         "dtype": "video",
         "shape": (3, 675, 1200),
         "names": ["channels", "height", "width"]
     },
-    "observation.images.right": {
+    "observation.images.top_right": {
         "dtype": "video",
         "shape": (3, 675, 1200),
-        "names": ["height", "width", "channel"],
+        "names": ["channels", "height", "width"],
+    },
+    "observation.images.lwrist": {
+        "dtype": "video",
+        "shape": (3, 675, 1200),
+        "names": ["channels", "height", "width"],
+    },
+    "observation.images.rwrist": {
+        "dtype": "video",
+        "shape": (3, 675, 1200),
+        "names": ["channels", "height", "width"],
     },
     "observation.state": {
         "dtype": "float32",
         "shape": (14,),
         "names": ["state"],
     },
-    "action": {
+    "action_abs": {
         "dtype": "float32",
         "shape": (20,),
-        "names": ["action"],
+        "names": ["action_abs"],
+    },
+    "action_re": {
+        "dtype": "float32",
+        "shape": (14,),
+        "names": ["action_relative"],
     },
 }
-
-
 
 
 class SurgicalDatasetConverter:
@@ -80,28 +93,41 @@ class SurgicalDatasetConverter:
                     raise ValueError(f'Error loading {file_path}: {str(e)}')
             if file.endswith('.avi'):
                 if 'left' in file:
-                    left_video_path = os.path.join(episode_dir,file)     
+                    top_left_video_path = os.path.join(episode_dir,file)     
                 if 'right' in file: 
-                    right_video_path = os.path.join(episode_dir,file)
+                    top_right_video_path = os.path.join(episode_dir,file)
+                if '2' in file:
+                    lwrist_video_path = os.path.join(episode_dir,file)
+                if '4' in file:
+                    rwrist_video_path = os.path.join(episode_dir,file)
+
         try:
-            cap_left = cv2.VideoCapture(left_video_path)
-            cap_right = cv2.VideoCapture(right_video_path)
+            cap_top_left = cv2.VideoCapture(top_left_video_path)
+            cap_top_right = cv2.VideoCapture(top_right_video_path)
+            cap_lwrist = cv2.VideoCapture(lwrist_video_path)
+            cap_rwrist = cv2.VideoCapture(rwrist_video_path)
         except Exception as e:
             raise ValueError(f'Error loading video files: {str(e)} in {episode_dir}')
 
-        frame_count_left = int(cap_left.get(cv2.CAP_PROP_FRAME_COUNT))
-        frame_count_right = int(cap_right.get(cv2.CAP_PROP_FRAME_COUNT))
-        frame_count = min(frame_count_left,frame_count_right,len(meta_info)) - 1
+        frame_count_left = int(cap_top_left.get(cv2.CAP_PROP_FRAME_COUNT))
+        frame_count_right = int(cap_top_right.get(cv2.CAP_PROP_FRAME_COUNT))
+        frame_count_lwrist = int(cap_lwrist.get(cv2.CAP_PROP_FRAME_COUNT))
+        frame_count_rwrist = int(cap_rwrist.get(cv2.CAP_PROP_FRAME_COUNT))
+        frame_count = min(frame_count_left,frame_count_right,frame_count_lwrist,frame_count_rwrist,len(meta_info)) - 1
         frames = []
         try:
             # 1. save images
             for frame_idx in tqdm.tqdm(range(frame_count),desc='read one episode data'):
                 frame = {}
                 frame['task'] = 'surgery'
-                img_left = self.cam_data_process(cap_left.read()[1])
-                img_right = self.cam_data_process(cap_right.read()[1])
-                frame["observation.images.left"] = img_left
-                frame["observation.images.right"] = img_right
+                img_left = self.cam_data_process(cap_top_left.read()[1])
+                img_right = self.cam_data_process(cap_top_right.read()[1])
+                img_lwrist = self.cam_data_process(cap_lwrist.read()[1])
+                img_rwrist = self.cam_data_process(cap_rwrist.read()[1])
+                frame["observation.images.top_left"] = img_left
+                frame["observation.images.top_right"] = img_right
+                frame["observation.images.lwrist"] = img_lwrist
+                frame["observation.images.rwrist"] = img_rwrist
                 
                 # 2. save control info
                 target_psm, filter_pos, mtm_ratio, _, actual_psm = meta_info[frame_idx].values()
@@ -170,7 +196,20 @@ class SurgicalDatasetConverter:
                 mask = relative_pose[:, 3:6] < -np.pi
                 relative_pose[:, 3:6][mask] += 2*np.pi
                 action_relative_pose = relative_pose.astype(np.float32)
-
+                Re_target_matrx = action_relative_pose.reshape(4,6)
+                # 取左、右工具的相对位姿 (xyz + rpy 共6维) 与夹爪 (1维)
+                Re_L_xyzrpy = Re_target_matrx[0]  # shape (6,)
+                Re_R_xyzrpy = Re_target_matrx[2]  # shape (6,)
+                Re_L_gripper = action_tip_ratio[0]
+                Re_R_gripper = action_tip_ratio[2]
+                Re_action = torch.concat([
+                    torch.from_numpy(Re_L_xyzrpy),
+                    torch.tensor([Re_L_gripper], dtype=torch.float32),
+                    torch.from_numpy(Re_R_xyzrpy),
+                    torch.tensor([Re_R_gripper], dtype=torch.float32)
+                ], dim=0)  # 最终 shape (14,)
+                frame['action_re'] = Re_action
+                
                 frame['observation.state'] = torch.concat([torch.from_numpy(state_joint_angle[0,5:12]), torch.from_numpy(state_joint_angle[2,5:12])], dim=0)
 
                 target_matrx = action_target_matrix.reshape(4,3,4)
@@ -182,7 +221,7 @@ class SurgicalDatasetConverter:
                 R_ortho6d = target_matrx[2, :, :2]   # numpy array, shape: (3, 2)
                 R_gripper = action_tip_ratio[2]      # numpy scalar
 
-                frame['action'] = torch.concat([
+                frame['action_abs'] = torch.concat([
                     torch.from_numpy(L_xyz),                     # (3,)
                     torch.from_numpy(L_ortho6d.flatten()),       # (6,)
                     torch.tensor([L_gripper], dtype=torch.float32),  # (1,)
@@ -196,8 +235,10 @@ class SurgicalDatasetConverter:
         except Exception as e:
             raise ValueError(f'Error processing data in {episode_dir}: {str(e)}')
         
-        cap_left.release()
-        cap_right.release()
+        cap_top_left.release()
+        cap_top_right.release()
+        cap_lwrist.release()
+        cap_rwrist.release()
         return frames
 
 
@@ -226,10 +267,10 @@ class SurgicalDatasetConverter:
 # 使用示例
 if __name__ == "__main__":
     writer = SurgicalDatasetConverter(
-        repo_id="surgery_80",
+        repo_id="surgery_knot180",
         fps=30,
-        root="./data/surgery_80",
+        root="./data/surgery_knot180",
         features=FEATURES,
         )
 
-    writer.Run('/home/dell/Downloads/video')
+    writer.Run('/home/dell/Downloads/knot_1113')

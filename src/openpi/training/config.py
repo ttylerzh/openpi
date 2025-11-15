@@ -499,9 +499,9 @@ class Dual_RealmanDataConfig(DataConfigFactory):
         )
 
 @dataclasses.dataclass(frozen=True)
-class Surgery_DataConfig(DataConfigFactory):
+class Surgery_DataConfig_1(DataConfigFactory):
     # 如果原始数据中动作字段名不是actions,需要在这里指定
-    action_sequence_keys: Sequence[str] = ("action",)
+    action_sequence_keys: Sequence[str] = ("action_abs",)
 
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig, ) -> DataConfig:
@@ -509,10 +509,12 @@ class Surgery_DataConfig(DataConfigFactory):
             inputs=[
                 _transforms.RepackTransform(
                     {
-                        "observation.images.left": "observation.images.left",
-                        "observation.images.right": "observation.images.right",
+                        "observation.images.top_left": "observation.images.top_left",
+                        "observation.images.top_right": "observation.images.top_right",
+                        "observation.images.lwrist": "observation.images.lwrist",
+                        "observation.images.rwrist": "observation.images.rwrist",
                         "observation.state": "observation.state",
-                        "actions": "action",
+                        "actions": "action_abs",
                         "prompt": "prompt"
                     }
                 )
@@ -520,17 +522,83 @@ class Surgery_DataConfig(DataConfigFactory):
         )
         
         data_transforms = _transforms.Group(
-            inputs=[surgery_policy.Surgery_Inputs(action_dim=model_config.action_dim, model_type=model_config.model_type)],
-            outputs=[surgery_policy.Surgery_Outputs()],
+            inputs=[surgery_policy.Surgery_Inputs_2V(action_dim=model_config.action_dim, model_type=model_config.model_type)],
+            outputs=[surgery_policy.Surgery_Outputs_abs()],
         )
-        # action已经是delta action（relative_pose = next - current）
-        # 不需要再应用DeltaActions转换
-        # delta_action_mask = _transforms.make_bool_mask(9, -1, 9, -1)
-        # data_transforms = data_transforms.push(
-        #     inputs=[_transforms.DeltaActions(delta_action_mask)],
-        #     outputs=[_transforms.AbsoluteActions(delta_action_mask)],
-        # )
+        model_transforms = ModelTransformFactory()(model_config)
 
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            repack_transforms=repack_transform,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+            action_sequence_keys=self.action_sequence_keys,
+        )
+
+@dataclasses.dataclass(frozen=True)
+class Surgery_DataConfig_2(DataConfigFactory):
+    # 如果原始数据中动作字段名不是actions,需要在这里指定
+    action_sequence_keys: Sequence[str] = ("action_re",)
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig, ) -> DataConfig:
+        repack_transform = _transforms.Group(
+            inputs=[
+                _transforms.RepackTransform(
+                    {
+                        "observation.images.top_left": "observation.images.top_left",
+                        "observation.images.top_right": "observation.images.top_right",
+                        "observation.images.lwrist": "observation.images.lwrist",
+                        "observation.images.rwrist": "observation.images.rwrist",
+                        "observation.state": "observation.state",
+                        "actions": "action_re",
+                        "prompt": "prompt"
+                    }
+                )
+            ]
+        )
+        
+        data_transforms = _transforms.Group(
+            inputs=[surgery_policy.Surgery_Inputs_2V(action_dim=model_config.action_dim, model_type=model_config.model_type)],
+            outputs=[surgery_policy.Surgery_Outputs_re()],
+        )
+        model_transforms = ModelTransformFactory()(model_config)
+
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            repack_transforms=repack_transform,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+            action_sequence_keys=self.action_sequence_keys,
+        )
+
+@dataclasses.dataclass(frozen=True)
+class Surgery_DataConfig_3(DataConfigFactory):
+    # 如果原始数据中动作字段名不是actions,需要在这里指定
+    action_sequence_keys: Sequence[str] = ("action_re",)
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig, ) -> DataConfig:
+        repack_transform = _transforms.Group(
+            inputs=[
+                _transforms.RepackTransform(
+                    {
+                        "observation.images.top_left": "observation.images.top_left",
+                        "observation.images.top_right": "observation.images.top_right",
+                        "observation.images.lwrist": "observation.images.lwrist",
+                        "observation.images.rwrist": "observation.images.rwrist",
+                        "observation.state": "observation.state",
+                        "actions": "action_re",
+                        "prompt": "prompt"
+                    }
+                )
+            ]
+        )
+        
+        data_transforms = _transforms.Group(
+            inputs=[surgery_policy.Surgery_Inputs_4V(action_dim=model_config.action_dim, model_type=model_config.model_type)],
+            outputs=[surgery_policy.Surgery_Outputs_re()],
+        )
         model_transforms = ModelTransformFactory()(model_config)
 
         return dataclasses.replace(
@@ -638,21 +706,54 @@ class TrainConfig:
 
 
 # Use `get_config` if you need to get a config by name in your code.
+# pi0_base中的action_dim是填充target的长度，不需要调整只要在policy中设置padding即可
+# pi0_fast中的action_dim是数据中action长度，要和数据中保持一致
 _CONFIGS = [
-    # pi0_base中的action_dim是填充target的长度，不需要调整只要在policy中设置padding即可
-    # pi0_fast中的action_dim是数据中action长度，要和数据中保持一致
+        # Config1: 内窥镜*2，绝对位姿
+        # Config2: 内窥镜*2，相对位姿
+        # Config3: 内窥镜*1，video2，video4，相对位姿
     TrainConfig(
-        name="pi05_surgery",
+        name="pi05_surgery_config1",
         model=pi0_config.Pi0Config(pi05=True, action_horizon=50, max_token_len=250, paligemma_variant="gemma_2b_lora"),
-        data=Surgery_DataConfig(
-            repo_id='surgery_80',
+        data=Surgery_DataConfig_1(
+            repo_id='surgery_knot180',
             base_config=DataConfig(prompt_from_task=True),
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
         batch_size=16,
         num_workers=12,
-        num_train_steps=12000,
-        save_interval=4000,
+        num_train_steps=20001,
+        save_interval=5000,
+        freeze_filter=pi0_config.Pi0Config(pi05=True,action_horizon=50, max_token_len=250, paligemma_variant="gemma_2b_lora"
+        ).get_freeze_filter(),
+    ),
+    TrainConfig(
+        name="pi05_surgery_config2",
+        model=pi0_config.Pi0Config(pi05=True, action_horizon=50, max_token_len=250, paligemma_variant="gemma_2b_lora"),
+        data=Surgery_DataConfig_2(
+            repo_id='surgery_knot180',
+            base_config=DataConfig(prompt_from_task=True),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        batch_size=16,
+        num_workers=12,
+        num_train_steps=20001,
+        save_interval=5000,
+        freeze_filter=pi0_config.Pi0Config(pi05=True,action_horizon=50, max_token_len=250, paligemma_variant="gemma_2b_lora"
+        ).get_freeze_filter(),
+    ),
+    TrainConfig(
+        name="pi05_surgery_config3",
+        model=pi0_config.Pi0Config(pi05=True, action_horizon=50, max_token_len=250, paligemma_variant="gemma_2b_lora"),
+        data=Surgery_DataConfig_3(
+            repo_id='surgery_knot180',
+            base_config=DataConfig(prompt_from_task=True),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        batch_size=16,
+        num_workers=12,
+        num_train_steps=20001,
+        save_interval=5000,
         freeze_filter=pi0_config.Pi0Config(pi05=True,action_horizon=50, max_token_len=250, paligemma_variant="gemma_2b_lora"
         ).get_freeze_filter(),
     ),
