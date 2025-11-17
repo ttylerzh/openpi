@@ -1,4 +1,5 @@
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
 
-uv run common/pi_server.py \
-    --env pi05
+uv run scripts/serve_policy.py policy:checkpoint \
+    --policy.config=pi05_surgery_config1 \
+    --policy.dir=checkpoints/pi05_surgery_config1/1116/20000
